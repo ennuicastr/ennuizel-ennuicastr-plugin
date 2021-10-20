@@ -1,0 +1,22 @@
+{
+  "name": "ennuizel-ennuicastr-plugin",
+  "version": "1.0.0",
+  "description": "A plugin to link Ennuizel to Ennuicastr.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yahweasel/ennuizel-ennuicastr-plugin.git"
+  },
+  "author": "Yahweasel",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Yahweasel/ennuizel-ennuicastr-plugin/issues"
+  },
+  "homepage": "https://github.com/Yahweasel/ennuizel-ennuicastr-plugin#readme",
+  "dependencies": {
+    "typescript": "^4.4.4"
+  }
+}
