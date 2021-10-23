@@ -530,7 +530,7 @@ async function loadData(
         // Enqueue SFX tracks
         while (sfxTracks.length && promises.length < threads) {
             const track = sfxTracks.shift();
-            promises.push(loadTrack(track.track, 0x12, track.idx, trackCt + track.idx));
+            promises.push(loadTrack(track.track, 0x12, track.idx, trackCt + track.idx - 1));
         }
 
         // Wait for one to finish
