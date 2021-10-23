@@ -199,37 +199,53 @@ async function wizard(d: ennuizel.ui.Dialog) {
     // Disable undo for all the wizard tasks
     await Ennuizel.disableUndo();
 
-    // Noise reduction
-    if (opts.noiser) {
-        // Use ennuizel-noise-repellent
-        const plugin = Ennuizel.getPlugin("noise-repellent");
-        Ennuizel.select.selectAll();
-        await plugin.api.noiseRepellent({WHITENING: 50}, Ennuizel.select.getSelection(), d);
-    }
+    const nr = Ennuizel.getPlugin("noise-repellent");
+    const l = Ennuizel.getPlugin("better-normalization");
 
-    // Leveling
-    if (opts.level) {
-        // Use ennuizel-better-normalization
-        const plugin = Ennuizel.getPlugin("better-normalization");
-        Ennuizel.select.selectAll();
-        await plugin.api.betterNormalize({}, Ennuizel.select.getSelection(), d);
+    // Make our pre-filter
+    let preFilter:
+        (x: ennuizel.EZStream<ennuizel.LibAVFrame>) =>
+        Promise<ReadableStream<ennuizel.LibAVFrame>> = null;
+    if (opts.noiser || opts.level) {
+        preFilter = async function(x) {
+            let y: ReadableStream<ennuizel.LibAVFrame> = null;
+            if (opts.noiser)
+                y = await nr.api.noiseRepellent(x, {WHITENING: 50});
+            if (opts.level)
+                y = await l.api.betterNormalize(
+                    y ? new Ennuizel.EZStream(y) : x);
+            return y;
+        };
     }
 
     // Mixing
     if (opts.mix) {
+        // Maybe make our post-filter
+        let postFilter:
+            (x: ennuizel.EZStream<ennuizel.LibAVFrame>) =>
+            Promise<ReadableStream<ennuizel.LibAVFrame>> = null;
+        if (opts.level)
+            postFilter = l.api.betterNormalize;
+
+        // Perform the mix
         Ennuizel.select.selectAll();
         const sel = Ennuizel.select.getSelection();
-        await project.addTrack(await Ennuizel.filters.mixTracks(sel, d));
+        await project.addTrack(
+            await Ennuizel.filters.mixTracks(sel, d, {preFilter, postFilter}));
 
+        // Get rid of the now-mixed tracks
         d.box.innerHTML = "Loading...";
         for (const track of sel.tracks)
             await project.removeTrack(track);
 
-        if (opts.level) {
-            const plugin = Ennuizel.getPlugin("better-normalization");
+    } else {
+        // No mixing, just apply the filters we have
+        if (preFilter) {
             Ennuizel.select.selectAll();
-            await plugin.api.betterNormalize({}, Ennuizel.select.getSelection(), d);
+            const sel = Ennuizel.select.getSelection();
+            await Ennuizel.filters.selectionFilter(preFilter, false, sel, d);
         }
+
     }
 
     // Export
@@ -243,6 +259,8 @@ async function wizard(d: ennuizel.ui.Dialog) {
         await Ennuizel.exportAudio(Object.assign({
             prefix: projName
         }, exportt), Ennuizel.select.getSelection(), d);
+        await Ennuizel.exportCaption({prefix: projName},
+            Ennuizel.select.getSelection(), d);
     }
 
     d.box.innerHTML = "Loading...";
@@ -265,17 +283,25 @@ async function loadData(
         id.toString(36));
 
     // Get the info
-    const response = await fetch("/info.jss?i=" + id.toString(36) + "&k=" +
-        key.toString(36));
+    const response = await fetch("/rec.jss?i=" + id.toString(36) + "&k=" +
+        key.toString(36) + "&f=info");
     const info = await response.json();
+    const transcription = info.info.transcription;
 
     // Create the tracks
     const tracks: {idx: number, track: ennuizel.track.AudioTrack}[] = [];
+    const capTracks: {idx: number, track: ennuizel.captions.CaptionTrack}[] = [];
     const sfxTracks: {idx: number, track: ennuizel.track.AudioTrack}[] = [];
     for (let idx = 1; info.tracks[idx]; idx++) {
         const track = await project.newAudioTrack(
             {name: idx + "-" + info.tracks[idx].nick});
         tracks.push({idx, track});
+
+        if (transcription) {
+            const ctrack = await project.newCaptionTrack(
+                {name: idx + "-" + info.tracks[idx].nick});
+            capTracks.push({idx, track: ctrack});
+        }
     }
     const trackCt = tracks.length;
     for (let idx = 1; idx <= info.sfx; idx++) {
@@ -460,7 +486,7 @@ async function loadData(
                         if (status[sidx].duration === false)
                             status[sidx].duration = 0;
                         for (const frame of fframes) {
-                            controller.enqueue(frame.data);
+                            controller.enqueue(frame);
                             (<number> status[sidx].duration) +=
                                 frame.nb_samples / track.sampleRate;
                         }
@@ -481,7 +507,7 @@ async function loadData(
         });
 
         // And append
-        await track.append(trackStream);
+        await track.append(new Ennuizel.EZStream(trackStream));
 
         libav.terminate();
     }
@@ -514,6 +540,27 @@ async function loadData(
 
     // Wait for them all to finish
     await Promise.all(promises);
+
+    // Load any caption tracks
+    d.box.innerHTML = "Loading...";
+    for (const {idx, track} of capTracks) {
+        const response = await fetch("/rec.jss?i=" + id.toString(36) + "&k=" +
+            key.toString(36) + "&f=vosk&t=" + idx);
+        let caps: any[] = [];
+        try {
+            caps = await response.json();
+        } catch (ex) {}
+        caps = caps.filter(x => x.length > 0);
+
+        // Add all the captions
+        for (let lo = 0; lo < caps.length; lo += 16) {
+            const lines = caps.slice(lo, lo + 16);
+            d.box.innerHTML = "Loading captions...<br/>" + track.name + ": " +
+                Ennuizel.util.timestamp(lines[0][0].start);
+            await track.appendRaw(lines);
+        }
+    }
+    d.box.innerHTML = "Loading...";
 
     return project;
 }
