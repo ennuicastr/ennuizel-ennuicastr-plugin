@@ -145,6 +145,14 @@ async function wizard(d: ennuizel.ui.Dialog) {
                     value: format.name,
                     innerText: format.name.replace("_", "")
                 });
+
+                if (format.options.format === "flac") {
+                    // Add the Audacity option here
+                    ui.mk("option", fsel, {
+                        value: "aup",
+                        innerText: "Audacity project"
+                    });
+                }
             }
             ui.mk("br", d.box);
             ui.mk("br", d.box);
@@ -249,19 +257,30 @@ async function wizard(d: ennuizel.ui.Dialog) {
     }
 
     // Export
-    {
+    Ennuizel.select.selectAll();
+    if (opts.format === "aup") {
+        // As Audacity
+        await Ennuizel.exportAudacity({
+            prefix: projName,
+            format: "flac",
+            codec: "flac",
+            ext: "ogg",
+            sampleFormat: Ennuizel.LibAVSampleFormat.S32
+        }, Ennuizel.select.getSelection(), d);
+
+    } else {
         // Get the export options
         const exportt = Ennuizel.standardExports
             .filter(x => x.name === opts.format)[0].options;
 
         // And export
-        Ennuizel.select.selectAll();
         await Ennuizel.exportAudio(Object.assign({
             prefix: projName
         }, exportt), Ennuizel.select.getSelection(), d);
-        await Ennuizel.exportCaption({prefix: projName},
-            Ennuizel.select.getSelection(), d);
     }
+
+    await Ennuizel.exportCaption({prefix: projName},
+        Ennuizel.select.getSelection(), d);
 
     d.box.innerHTML = "Loading...";
 
