@@ -16,9 +16,6 @@ OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 `;
 
-// extern
-declare let LibAV: any;
-
 const ui = Ennuizel.ui;
 const hotkeys = Ennuizel.hotkeys;
 
@@ -362,7 +359,7 @@ async function loadData(
         sidx: number
     ) {
         // Make a libav instance
-        const libav = await LibAV.LibAV();
+        const libav = await Ennuizel.avthreads.get();
 
         // Make the connection
         const sock = new WebSocket("wss://" + url.host + "/ws");
@@ -432,47 +429,49 @@ async function loadData(
         const inRdr = inStream.getReader();
 
         // Get 1MB of data to queue up libav
-        await libav.mkreaderdev("tmp.ogg");
+        const fname = "tmp-" + idx + ".ogg";
+        await libav.mkreaderdev(fname);
         {
             let remaining = 1024*1024;
             while (remaining > 0) {
                 const rd = await inRdr.read();
                 if (rd.done)
                     break;
-                await libav.ff_reader_dev_send("tmp.ogg", rd.value);
+                await libav.ff_reader_dev_send(fname, rd.value);
                 remaining -= rd.value.length;
             }
         }
 
         // Prepare to decode
         const [fmt_ctx, [stream]] =
-            await libav.ff_init_demuxer_file("tmp.ogg");
+            await libav.ff_init_demuxer_file(fname);
         const [, c, pkt, frame] =
             await libav.ff_init_decoder(stream.codec_id, stream.codecpar);
 
         // We also need to change the format
-        let buffersrc_ctx: number = -1, buffersink_ctx: number = 1;
+        let filter_graph = -1, buffersrc_ctx = -1, buffersink_ctx = -1;
 
         // Readable stream for the track
         const trackStream = new Ennuizel.ReadableStream({
             async pull(controller) {
                 // Decode
                 while (true) {
-                    // Get a bit
-                    const rd = await inRdr.read();
-                    await libav.ff_reader_dev_send("tmp.ogg",
-                        rd.done ? null : rd.value);
-
-                    // Read it
-                    const [, packets] =
-                        await libav.ff_read_multi(fmt_ctx, pkt, "tmp.ogg");
-                    if (!packets[stream.index])
+                    // Read a bit
+                    const [readRes, packets] =
+                        await libav.ff_read_multi(fmt_ctx, pkt, fname, {limit: 4096});
+                    const eof = (readRes === libav.AVERROR_EOF);
+                    if (!packets[stream.index] && !eof) {
+                        // Read a bit more
+                        const rd = await inRdr.read();
+                        await libav.ff_reader_dev_send(fname,
+                            rd.done ? null : rd.value);
                         continue;
+                    }
 
                     // Decode it
                     const frames =
                         await libav.ff_decode_multi(c, pkt, frame,
-                            packets[stream.index], rd.done);
+                            packets[stream.index] || [], eof);
 
                     // Prepare the filter
                     if (frames.length && buffersrc_ctx < 0) {
@@ -483,7 +482,7 @@ async function loadData(
                         track.channels = frames[0].channels;
                         const channelLayout = (track.channels === 1) ? 4 : ((1<<track.channels)-1);
 
-                        [, buffersrc_ctx, buffersink_ctx] =
+                        [filter_graph, buffersrc_ctx, buffersink_ctx] =
                             await libav.ff_init_filter_graph("anull", {
                                 sample_rate: track.sampleRate,
                                 sample_fmt: frames[0].format,
@@ -499,7 +498,7 @@ async function loadData(
                         // Filter it
                         const fframes =
                             await libav.ff_filter_multi(buffersrc_ctx, buffersink_ctx,
-                                frame, frames, rd.done);
+                                frame, frames, eof);
 
                         // And send it along
                         if (status[sidx].duration === false)
@@ -509,15 +508,15 @@ async function loadData(
                             (<number> status[sidx].duration) +=
                                 frame.nb_samples / track.sampleRate;
                         }
-                        if (rd.done)
+                        if (eof)
                             status[sidx].duration = true;
                         showStatus();
 
-                        if (fframes.length && !rd.done)
+                        if (fframes.length && !eof)
                             break;
                     }
 
-                    if (rd.done) {
+                    if (eof) {
                         controller.close();
                         break;
                     }
@@ -528,7 +527,12 @@ async function loadData(
         // And append
         await track.append(new Ennuizel.EZStream(trackStream));
 
-        libav.terminate();
+        // Clean up
+        await libav.avformat_close_input_js(fmt_ctx);
+        await libav.ff_free_decoder(c, pkt, frame);
+        if (filter_graph >= 0)
+            await libav.avfilter_graph_free_js(filter_graph);
+        await libav.unlink(fname);
     }
 
     // # of threads
