@@ -435,8 +435,10 @@ async function loadData(
             let remaining = 1024*1024;
             while (remaining > 0) {
                 const rd = await inRdr.read();
-                if (rd.done)
+                if (rd.done) {
+                    await libav.ff_reader_dev_send(fname, null);
                     break;
+                }
                 await libav.ff_reader_dev_send(fname, rd.value);
                 remaining -= rd.value.length;
             }
